@@ -12,9 +12,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { jsPDF } from "jspdf";
 import {
   Upload, FileText, Settings, CheckCircle2, ArrowLeft, BookOpen,
-  Plus, Trash2, Eye, Users, BarChart3, ClipboardList, Sparkles, AlertCircle, Clock, ChevronDown, ChevronUp
+  Plus, Trash2, Eye, Users, BarChart3, ClipboardList, Sparkles, AlertCircle, Clock, ChevronDown, ChevronUp, Download,
+  FileCheck, XCircle, MessageSquare, ExternalLink, Edit3, Save, RotateCcw
 } from "lucide-react";
 
 function FileDropzone({ onDrop, accept, label, icon: Icon, file }) {
@@ -55,7 +58,7 @@ export default function FacultyPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState("setup");
   const [files, setFiles] = useState({ question: null, rubric: null, model: null });
-  const [settings, setSettings] = useState({ difficulty: "medium", strictness: "moderate", totalMarks: "10", subject: "", title: "" });
+  const [settings, setSettings] = useState({ difficulty: "medium", strictness: "moderate", totalMarks: "10", subject: "", title: "", department: "", semester: "" });
   const [rubricItems, setRubricItems] = useState([
     { parameter: "Concept Accuracy", maxMarks: 3, description: "Are concepts correct and well-explained?" },
     { parameter: "Completeness", maxMarks: 2, description: "Are all parts of the question answered?" },
@@ -71,6 +74,23 @@ export default function FacultyPage() {
   const [historySessions, setHistorySessions] = useState([]);
   const [sessionSubmissions, setSessionSubmissions] = useState({});
   const [expandedSession, setExpandedSession] = useState(null);
+
+  // New states for generating questions
+  const [questionSource, setQuestionSource] = useState("upload"); // "upload" or "generate"
+  const [syllabusFile, setSyllabusFile] = useState(null);
+  const [genSettings, setGenSettings] = useState({ questionType: "both", count: "10" });
+  const [generatedQuestions, setGeneratedQuestions] = useState("");
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  // Review dialog states
+  const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
+  const [selectedSubmission, setSelectedSubmission] = useState(null);
+  const [detailedSubmission, setDetailedSubmission] = useState(null);
+  const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+  const [isReviewing, setIsReviewing] = useState(false);
+  const [teacherFeedback, setTeacherFeedback] = useState("");
+  const [modifiedResult, setModifiedResult] = useState(null);
+  const [isEditingMarks, setIsEditingMarks] = useState(false);
 
   const fetchHistory = useCallback(async () => {
     try {
@@ -101,6 +121,99 @@ export default function FacultyPage() {
     }
   };
 
+  const openReviewDialog = async (submission) => {
+    setSelectedSubmission(submission);
+    setReviewDialogOpen(true);
+    setIsLoadingDetails(true);
+    setTeacherFeedback(submission.teacherFeedback || "");
+    setModifiedResult(null);
+    setIsEditingMarks(false);
+    
+    try {
+      const res = await fetch(`http://localhost:5000/api/faculty/submission/${submission._id}`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (data.success) {
+        setDetailedSubmission(data.submission);
+        // Initialize modified result with original if teacher hasn't modified yet
+        if (!data.submission.teacherModifiedResult && data.submission.result) {
+          setModifiedResult(JSON.parse(JSON.stringify(data.submission.result)));
+        } else if (data.submission.teacherModifiedResult) {
+          setModifiedResult(JSON.parse(JSON.stringify(data.submission.teacherModifiedResult)));
+        }
+      }
+    } catch (e) { console.error(e); }
+    setIsLoadingDetails(false);
+  };
+
+  const handleReviewAction = async (action) => {
+    setIsReviewing(true);
+    try {
+      const res = await fetch(`http://localhost:5000/api/faculty/submission/${selectedSubmission._id}/review`, {
+        method: "POST",
+        headers: { 
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          action,
+          modifiedResult: isEditingMarks && modifiedResult ? modifiedResult : null,
+          teacherFeedback
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        // Update local state
+        setSessionSubmissions(prev => {
+          const updated = { ...prev };
+          Object.keys(updated).forEach(sessionId => {
+            updated[sessionId] = updated[sessionId].map(sub => 
+              sub._id === selectedSubmission._id 
+                ? { ...sub, teacherApproved: action === "approve", publishedToStudent: action === "approve", teacherFeedback }
+                : sub
+            );
+          });
+          return updated;
+        });
+        setReviewDialogOpen(false);
+        setDetailedSubmission(null);
+        setSelectedSubmission(null);
+      }
+    } catch (e) { console.error(e); }
+    setIsReviewing(false);
+  };
+
+  const publishAllApproved = async (sessionId) => {
+    try {
+      const res = await fetch(`http://localhost:5000/api/faculty/session/${sessionId}/publish`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (data.success) {
+        // Refresh submissions
+        loadSubmissions(sessionId);
+      }
+    } catch (e) { console.error(e); }
+  };
+
+  const updateModifiedScore = (idx, newScore) => {
+    if (!modifiedResult) return;
+    const newScores = [...modifiedResult.scores];
+    newScores[idx] = { ...newScores[idx], score: Number(newScore) };
+    const newTotal = newScores.reduce((sum, s) => sum + s.score, 0);
+    const newPercentage = Math.round((newTotal / modifiedResult.maxMarks) * 100);
+    const newGrade = newPercentage >= 90 ? "A+" : newPercentage >= 80 ? "A" : newPercentage >= 70 ? "B" : newPercentage >= 60 ? "C" : newPercentage >= 50 ? "D" : "F";
+    setModifiedResult({
+      ...modifiedResult,
+      scores: newScores,
+      totalMarks: newTotal,
+      percentage: newPercentage,
+      grade: newGrade
+    });
+  };
+
   useEffect(() => {
     if (!loading && (!token || user?.role !== "teacher")) {
       router.push("/login");
@@ -127,16 +240,91 @@ export default function FacultyPage() {
     setRubricItems(rubricItems.map((item, i) => i === idx ? { ...item, [field]: value } : item));
   };
 
+  const handleGenerateQuestions = async () => {
+    if (!syllabusFile) {
+      setError("Please upload a syllabus file to generate questions.");
+      return;
+    }
+    setError("");
+    setIsGenerating(true);
+    setGeneratedQuestions("");
+
+    try {
+      const formData = new FormData();
+      formData.append("syllabusFile", syllabusFile);
+      formData.append("settings", JSON.stringify({ ...genSettings, difficulty: settings.difficulty }));
+
+      const res = await fetch("http://localhost:5000/api/faculty/generate-questions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`
+        },
+        body: formData,
+      });
+      const data = await res.json();
+      if (data.success) {
+        setGeneratedQuestions(data.generatedQuestions);
+      } else {
+        setError(data.message || "Failed to generate questions.");
+      }
+    } catch (e) {
+      setError("Backend unavailable or failed to connect.");
+    }
+    setIsGenerating(false);
+  };
+
+  const downloadPDF = () => {
+    if (!generatedQuestions) return;
+    const doc = new jsPDF();
+    const margin = 10;
+    const maxLineWidth = 190;
+    
+    // Title
+    doc.setFontSize(16);
+    doc.text(`Generated Question Paper - ${settings.subject || 'Subject'}`, margin, 20);
+    
+    // Questions
+    doc.setFontSize(12);
+    const splitText = doc.splitTextToSize(generatedQuestions, maxLineWidth);
+    
+    let y = 30;
+    for (let i = 0; i < splitText.length; i++) {
+      if (y > 280) {
+        doc.addPage();
+        y = 20;
+      }
+      doc.text(splitText[i], margin, y);
+      y += 6;
+    }
+    
+    doc.save(`Generated_Questions_${settings.subject || 'Paper'}.pdf`);
+  };
+
   const handleCreate = async () => {
     if (!settings.title || !settings.subject) {
       setError("Please fill in assignment title and subject.");
       return;
     }
+    if (questionSource === "upload" && !files.question) {
+      setError("Please upload a question paper.");
+      return;
+    }
+    if (questionSource === "generate" && !generatedQuestions) {
+      setError("Please generate questions first.");
+      return;
+    }
+
     setError("");
     setIsCreating(true);
     try {
       const formData = new FormData();
-      if (files.question) formData.append("questionPaper", files.question);
+      
+      if (questionSource === "upload" && files.question) {
+        formData.append("questionPaper", files.question);
+      } else if (questionSource === "generate" && generatedQuestions) {
+        formData.append("questionPaperText", generatedQuestions);
+      }
+
       if (files.rubric) formData.append("rubricFile", files.rubric);
       if (files.model) formData.append("modelAnswer", files.model);
       formData.append("settings", JSON.stringify(settings));
@@ -212,7 +400,7 @@ export default function FacultyPage() {
           {/* Setup Tab */}
           <TabsContent value="setup" className="animate-fade-in">
             <div className="grid lg:grid-cols-2 gap-6">
-              <Card className="shadow-sm border-0 bg-white/80">
+              <Card className="shadow-sm border-0 bg-white/80 h-fit">
                 <CardHeader>
                   <CardTitle className="text-lg">Assignment Details</CardTitle>
                   <CardDescription>Basic information about the assignment</CardDescription>
@@ -233,6 +421,42 @@ export default function FacultyPage() {
                       value={settings.subject}
                       onChange={(e) => setSettings({ ...settings, subject: e.target.value })}
                     />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Department</Label>
+                      <Select value={settings.department} onValueChange={(v) => setSettings({ ...settings, department: v })}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select Dept" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="cse">Computer Science (CSE)</SelectItem>
+                          <SelectItem value="it">Information Technology (IT)</SelectItem>
+                          <SelectItem value="ece">Electronics (ECE)</SelectItem>
+                          <SelectItem value="ee">Electrical (EE)</SelectItem>
+                          <SelectItem value="me">Mechanical (ME)</SelectItem>
+                          <SelectItem value="ce">Civil Engineering (CE)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Semester</Label>
+                      <Select value={settings.semester} onValueChange={(v) => setSettings({ ...settings, semester: v })}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select Sem" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="1st">1st Semester</SelectItem>
+                          <SelectItem value="2nd">2nd Semester</SelectItem>
+                          <SelectItem value="3rd">3rd Semester</SelectItem>
+                          <SelectItem value="4th">4th Semester</SelectItem>
+                          <SelectItem value="5th">5th Semester</SelectItem>
+                          <SelectItem value="6th">6th Semester</SelectItem>
+                          <SelectItem value="7th">7th Semester</SelectItem>
+                          <SelectItem value="8th">8th Semester</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
@@ -277,22 +501,81 @@ export default function FacultyPage() {
               <div className="space-y-4">
                 <Card className="shadow-sm border-0 bg-white/80">
                   <CardHeader className="pb-3">
-                    <CardTitle className="text-lg">Upload Files</CardTitle>
-                    <CardDescription>Upload question paper and supporting documents</CardDescription>
+                    <CardTitle className="text-lg">Question Source</CardTitle>
+                    <CardDescription>Choose how you want to provide the questions</CardDescription>
                   </CardHeader>
-                  <CardContent className="space-y-3">
+                  <CardContent className="space-y-4">
+                    <Tabs value={questionSource} onValueChange={setQuestionSource} className="w-full">
+                      <TabsList className="grid w-full grid-cols-2 mb-4 h-auto p-1">
+                        <TabsTrigger value="upload" className="py-2 text-sm">Upload Paper</TabsTrigger>
+                        <TabsTrigger value="generate" className="py-2 text-sm whitespace-normal">AI Generation</TabsTrigger>
+                      </TabsList>
+                      
+                      <TabsContent value="upload" className="space-y-3 mt-0">
+                        <Label className="mb-2 block">Question Paper</Label>
+                        <FileDropzone
+                          onDrop={(f) => setFiles({ ...files, question: f })}
+                          accept={{ "application/pdf": [".pdf"], "application/msword": [".doc", ".docx"] }}
+                          label="Upload Question Paper"
+                          icon={FileText}
+                          file={files.question}
+                        />
+                      </TabsContent>
+                      
+                      <TabsContent value="generate" className="space-y-4 mt-0">
+                        <div>
+                          <Label className="mb-2 block">Syllabus Document</Label>
+                          <FileDropzone
+                            onDrop={(f) => setSyllabusFile(f)}
+                            accept={{ "application/pdf": [".pdf"], "application/msword": [".doc", ".docx"] }}
+                            label="Upload Syllabus"
+                            icon={BookOpen}
+                            file={syllabusFile}
+                          />
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label>Question Type</Label>
+                            <Select value={genSettings.questionType} onValueChange={(v) => setGenSettings({ ...genSettings, questionType: v })}>
+                              <SelectTrigger>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="mcq">MCQ Only</SelectItem>
+                                <SelectItem value="subjective">Subjective Only</SelectItem>
+                                <SelectItem value="both">Both</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Question Count</Label>
+                            <Input
+                              type="number"
+                              placeholder="10"
+                              value={genSettings.count}
+                              onChange={(e) => setGenSettings({ ...genSettings, count: e.target.value })}
+                            />
+                          </div>
+                        </div>
+                        
+                        <Button 
+                          className="w-full" 
+                          variant="secondary"
+                          onClick={handleGenerateQuestions}
+                          disabled={isGenerating || !syllabusFile}
+                        >
+                          {isGenerating ? (
+                            <><div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin mr-2" /> Generating...</>
+                          ) : (
+                            <><Sparkles className="w-4 h-4 mr-2" /> Generate Questions</>
+                          )}
+                        </Button>
+                      </TabsContent>
+                    </Tabs>
+
                     <div>
-                      <Label className="mb-2 block">Question Paper</Label>
-                      <FileDropzone
-                        onDrop={(f) => setFiles({ ...files, question: f })}
-                        accept={{ "application/pdf": [".pdf"], "application/msword": [".doc", ".docx"] }}
-                        label="Upload Question Paper"
-                        icon={FileText}
-                        file={files.question}
-                      />
-                    </div>
-                    <div>
-                      <Label className="mb-2 block">Model Answer <span className="text-muted-foreground text-xs">(optional)</span></Label>
+                      <Label className="mb-2 block mt-4">Model Answer <span className="text-muted-foreground text-xs">(optional)</span></Label>
                       <FileDropzone
                         onDrop={(f) => setFiles({ ...files, model: f })}
                         accept={{ "application/pdf": [".pdf"], "application/msword": [".doc", ".docx"] }}
@@ -306,8 +589,31 @@ export default function FacultyPage() {
               </div>
             </div>
 
+            {/* Generated Questions Preview Section */}
+            {questionSource === "generate" && generatedQuestions && (
+              <Card className="shadow-sm border-0 bg-white/80 mt-6 border-l-4 border-l-emerald-500">
+                <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                  <div>
+                    <CardTitle className="text-lg">Generated Questions Preview</CardTitle>
+                    <CardDescription>Review the AI-generated question paper based on your syllabus</CardDescription>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={downloadPDF}>
+                    <Download className="w-4 h-4 mr-2" /> Download PDF
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  <Textarea 
+                    className="min-h-[300px] font-mono text-sm leading-relaxed p-4"
+                    value={generatedQuestions}
+                    onChange={(e) => setGeneratedQuestions(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground mt-2">You can edit the questions directly in this box before proceeding to create the session.</p>
+                </CardContent>
+              </Card>
+            )}
+
             {error && (
-              <div className="mt-4 flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+              <div className="mt-6 flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
                 <AlertCircle className="w-4 h-4 flex-shrink-0" />
                 {error}
               </div>
@@ -442,6 +748,8 @@ export default function FacultyPage() {
                     <div className="grid grid-cols-3 gap-4">
                       {[
                         { label: "Subject", value: settings.subject || "—" },
+                        { label: "Department", value: settings.department ? settings.department.toUpperCase() : "—" },
+                        { label: "Semester", value: settings.semester || "—" },
                         { label: "Difficulty", value: settings.difficulty },
                         { label: "Strictness", value: settings.strictness },
                         { label: "Total Marks", value: settings.totalMarks },
@@ -490,7 +798,7 @@ export default function FacultyPage() {
             <Card className="shadow-sm border-0 bg-white/80">
               <CardHeader>
                 <CardTitle className="text-lg">Past Sessions</CardTitle>
-                <CardDescription>View your previously created evaluation sessions and student submissions.</CardDescription>
+                <CardDescription>View student submissions, review AI evaluations, and approve results before publishing.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 {historySessions.length === 0 ? (
@@ -506,7 +814,18 @@ export default function FacultyPage() {
                           <p className="font-semibold text-sm">{session.title} <span className="text-xs text-muted-foreground ml-2 font-mono">{session.sessionId}</span></p>
                           <p className="text-xs text-muted-foreground">{session.subject} • {session.settings?.difficulty}</p>
                         </div>
-                        {expandedSession === session.sessionId ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+                        <div className="flex items-center gap-2">
+                          {expandedSession === session.sessionId && sessionSubmissions[session.sessionId] && (
+                            <Button 
+                              size="sm" 
+                              variant="outline"
+                              onClick={(e) => { e.stopPropagation(); publishAllApproved(session.sessionId); }}
+                            >
+                              <FileCheck className="w-4 h-4 mr-1" /> Publish All Approved
+                            </Button>
+                          )}
+                          {expandedSession === session.sessionId ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+                        </div>
                       </button>
 
                       {expandedSession === session.sessionId && (
@@ -518,16 +837,51 @@ export default function FacultyPage() {
                           ) : (
                             <div className="space-y-3">
                               {sessionSubmissions[session.sessionId].map(sub => (
-                                <div key={sub._id} className="flex items-center justify-between p-3 border rounded-lg hover:border-primary/30 transition-colors">
-                                  <div>
-                                    <p className="font-medium text-sm">{sub.studentName}</p>
-                                    <p className="text-xs text-muted-foreground">{new Date(sub.evaluatedAt).toLocaleString()}</p>
+                                <div key={sub._id} className={`flex flex-col p-3 border rounded-lg hover:border-primary/30 transition-colors ${sub.teacherApproved ? 'bg-emerald-50/50' : 'bg-amber-50/30'}`}>
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                      <p className="font-medium text-sm">{sub.studentName}</p>
+                                      {sub.teacherApproved ? (
+                                        <Badge variant="success" className="text-xs"><CheckCircle2 className="w-3 h-3 mr-1" /> Approved</Badge>
+                                      ) : (
+                                        <Badge variant="warning" className="text-xs"><Clock className="w-3 h-3 mr-1" /> Pending Review</Badge>
+                                      )}
+                                      {sub.publishedToStudent && (
+                                        <Badge variant="outline" className="text-xs">Published</Badge>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      {sub.result && (
+                                        <>
+                                          <Badge variant={sub.result.percentage >= 75 ? "success" : sub.result.percentage >= 50 ? "warning" : "danger"}>
+                                            {sub.result.percentage}%
+                                          </Badge>
+                                          <p className="text-sm font-bold">{sub.result.totalMarks}/{sub.result.maxMarks}</p>
+                                        </>
+                                      )}
+                                    </div>
                                   </div>
-                                  <div className="flex items-center gap-3">
-                                    <Badge variant={sub.result.percentage >= 75 ? "success" : sub.result.percentage >= 50 ? "warning" : "danger"}>
-                                      {sub.result.percentage}%
-                                    </Badge>
-                                    <p className="text-sm font-bold">{sub.result.totalMarks}/{sub.result.maxMarks}</p>
+                                  <p className="text-xs text-muted-foreground mt-1">{new Date(sub.evaluatedAt).toLocaleString()}</p>
+                                  <div className="flex items-center gap-2 mt-3">
+                                    {sub.assignmentPath && (
+                                      <Button size="sm" variant="outline" className="text-xs" asChild>
+                                        <a href={sub.assignmentPath} target="_blank" rel="noopener noreferrer">
+                                          <ExternalLink className="w-3 h-3 mr-1" /> View Document
+                                        </a>
+                                      </Button>
+                                    )}
+                                    <Button 
+                                      size="sm" 
+                                      variant={sub.teacherApproved ? "outline" : "default"}
+                                      className="text-xs"
+                                      onClick={() => openReviewDialog(sub)}
+                                    >
+                                      {sub.teacherApproved ? (
+                                        <><Eye className="w-3 h-3 mr-1" /> Reviewed</>
+                                      ) : (
+                                        <><FileCheck className="w-3 h-3 mr-1" /> Review & Approve</>
+                                      )}
+                                    </Button>
                                   </div>
                                 </div>
                               ))}
@@ -543,6 +897,136 @@ export default function FacultyPage() {
           </TabsContent>
           </div>
         </Tabs>
+
+        {/* Review Dialog */}
+        <Dialog open={reviewDialogOpen} onOpenChange={setReviewDialogOpen}>
+          <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <FileCheck className="w-5 h-5" />
+                Review Submission - {selectedSubmission?.studentName}
+              </DialogTitle>
+              <DialogDescription>
+                Review AI evaluation, modify marks if needed, and approve to publish results to the student.
+              </DialogDescription>
+            </DialogHeader>
+
+            {isLoadingDetails ? (
+              <div className="flex justify-center py-8">
+                <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+              </div>
+            ) : detailedSubmission ? (
+              <div className="space-y-6">
+                {/* AI Evaluation Summary */}
+                <Card className="border-0 shadow-sm bg-slate-50">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <Sparkles className="w-4 h-4 text-purple-600" />
+                        AI Evaluation Result
+                      </CardTitle>
+                      <Button 
+                        size="sm" 
+                        variant={isEditingMarks ? "default" : "outline"}
+                        onClick={() => setIsEditingMarks(!isEditingMarks)}
+                      >
+                        {isEditingMarks ? <><Save className="w-4 h-4 mr-1" /> Done Editing</> : <><Edit3 className="w-4 h-4 mr-1" /> Modify Marks</>}
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {/* Overall Score */}
+                    <div className="flex items-center gap-4 p-4 bg-white rounded-lg">
+                      <div className="text-center">
+                        <p className="text-2xl font-bold">{modifiedResult?.grade || detailedSubmission.result?.grade}</p>
+                        <p className="text-xs text-muted-foreground">Grade</p>
+                      </div>
+                      <Separator orientation="vertical" className="h-12" />
+                      <div className="text-center">
+                        <p className="text-2xl font-bold">{modifiedResult?.totalMarks || detailedSubmission.result?.totalMarks}/{detailedSubmission.result?.maxMarks}</p>
+                        <p className="text-xs text-muted-foreground">Score</p>
+                      </div>
+                      <Separator orientation="vertical" className="h-12" />
+                      <div className="text-center">
+                        <p className="text-2xl font-bold">{modifiedResult?.percentage || detailedSubmission.result?.percentage}%</p>
+                        <p className="text-xs text-muted-foreground">Percentage</p>
+                      </div>
+                    </div>
+
+                    {/* Score Breakdown */}
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium">Score Breakdown</p>
+                      {(modifiedResult?.scores || detailedSubmission.result?.scores)?.map((score, idx) => (
+                        <div key={idx} className="flex items-center justify-between p-2 bg-white rounded text-sm">
+                          <span>{score.parameter}</span>
+                          <div className="flex items-center gap-2">
+                            {isEditingMarks ? (
+                              <Input
+                                type="number"
+                                min="0"
+                                max={score.maxScore}
+                                value={modifiedResult?.scores?.[idx]?.score ?? score.score}
+                                onChange={(e) => updateModifiedScore(idx, e.target.value)}
+                                className="w-20 h-8 text-right"
+                              />
+                            ) : (
+                              <span className="font-medium">{score.score}/{score.maxScore}</span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* AI Comment */}
+                    <div className="p-3 bg-white rounded-lg">
+                      <p className="text-sm font-medium mb-1">AI Feedback</p>
+                      <p className="text-sm text-muted-foreground italic">&ldquo;{detailedSubmission.result?.aiComment}&rdquo;</p>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Teacher Feedback */}
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-2">
+                    <MessageSquare className="w-4 h-4" />
+                    Teacher Feedback (Optional)
+                  </Label>
+                  <Textarea
+                    placeholder="Add your feedback for the student..."
+                    value={teacherFeedback}
+                    onChange={(e) => setTeacherFeedback(e.target.value)}
+                    className="min-h-[100px]"
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            <DialogFooter className="gap-2">
+              <Button variant="outline" onClick={() => setReviewDialogOpen(false)}>
+                Cancel
+              </Button>
+              {detailedSubmission && !detailedSubmission.teacherApproved && (
+                <Button 
+                  variant="destructive" 
+                  onClick={() => handleReviewAction("reject")}
+                  disabled={isReviewing}
+                >
+                  {isReviewing ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" /> : <XCircle className="w-4 h-4 mr-2" />}
+                  Reject
+                </Button>
+              )}
+              {detailedSubmission && (
+                <Button 
+                  onClick={() => handleReviewAction("approve")}
+                  disabled={isReviewing}
+                >
+                  {isReviewing ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" /> : <FileCheck className="w-4 h-4 mr-2" />}
+                  {detailedSubmission.teacherApproved ? "Update Approval" : "Approve & Publish"}
+                </Button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );

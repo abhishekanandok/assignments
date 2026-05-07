@@ -22,4 +22,10 @@ router.get("/submissions/:sessionId", authMiddleware, restrictTo("teacher"), stu
  */
 router.get("/my-submissions", authMiddleware, restrictTo("student"), studentController.getMySubmissions);
 
+/**
+ * GET /api/student/submission/:submissionId
+ * Get a single submission by ID (student view - only if published)
+ */
+router.get("/submission/:submissionId", authMiddleware, restrictTo("student"), studentController.getSubmissionById);
+
 module.exports = router;

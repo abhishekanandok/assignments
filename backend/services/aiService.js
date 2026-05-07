@@ -41,20 +41,21 @@ EVALUATION RUBRIC (Total: ${totalMaxMarks} marks):
 ${rubricStr}
 
 INSTRUCTIONS:
-1. CRITICAL: You must strictly correlate the student's assignment against the QUESTION PAPER and the MODEL ANSWER provided.
-2. Do not grade the student's assignment in isolation. Check if their answers actually solve the exact questions asked in the Question Paper.
-3. Compare their facts, formulas, and conceptual explanations directly against the Model Answer. Penalize hallucinated, irrelevant, or factually incorrect information that deviates from the Model Answer.
-4. Carefully analyze the student's assignment (read the attached document images if provided). It may contain handwritten text; do your best to transcribe it accurately.
-5. Evaluate the student's assignment against each rubric parameter. Be highly accurate, objective, and reference where they succeeded or failed to match the Model Answer.
-6. Award marks strictly within the max marks for each parameter based on this factual correlation.
-7. Provide specific, constructive, and detailed feedback for each parameter specifically referencing how it compares to the model answer.
-8. Detect similarity risk (low/medium/high) — check if the text looks AI-generated or copied.
-9. List 3-5 specific strengths.
-10. List 3-5 actionable improvement suggestions.
-11. Write a brief overall comment (2-3 sentences)
-12. Calculate grade: A+ (95-100%), A (85-94%), B+ (75-84%), B (65-74%), C (50-64%), D (35-49%), F (<35%)
+1. CRITICAL FAIL-SAFE: First, determine if the STUDENT ASSIGNMENT is actually attempting to answer the provided QUESTION PAPER. If the subject matter is completely irrelevant or off-topic (e.g., submitting Data Structures answers for a Web Search question paper), you MUST award exactly 0 marks for all parameters, provide feedback stating the submission is irrelevant, and set the final grade to F.
+2. CRITICAL: You must strictly correlate the student's assignment against the QUESTION PAPER and the MODEL ANSWER provided.
+3. Do not grade the student's assignment in isolation. Check if their answers actually solve the exact questions asked in the Question Paper.
+4. Compare their facts, formulas, and conceptual explanations directly against the Model Answer. Penalize hallucinated, irrelevant, or factually incorrect information that deviates from the Model Answer.
+5. Carefully analyze the student's assignment (read the attached document images if provided). It may contain handwritten text; do your best to transcribe it accurately.
+6. Evaluate the student's assignment against each rubric parameter. Be highly accurate, objective, and reference where they succeeded or failed to match the Model Answer.
+7. Award marks strictly within the max marks for each parameter based on this factual correlation.
+8. Provide specific, constructive, and detailed feedback for each parameter specifically referencing how it compares to the model answer.
+9. Detect similarity risk (low/medium/high) — check if the text looks AI-generated or copied.
+10. List 3-5 specific strengths.
+11. List 3-5 actionable improvement suggestions.
+12. Write a brief overall comment (2-3 sentences)
+13. Calculate grade: A+ (95-100%), A (85-94%), B+ (75-84%), B (65-74%), C (50-64%), D (35-49%), F (<35%)
 
-YOU MUST RESPOND IN VALID JSON FORMAT ONLY. No markdown, no explanation outside JSON.
+YOU MUST RESPOND IN VALID JSON FORMAT ONLY. The 'scores' array MUST contain exactly ONE object for each rubric parameter. NEVER use strings directly inside the 'scores' array. No markdown, no explanation outside JSON.
 
 {
   "scores": [
@@ -133,7 +134,8 @@ async function callOpenAIAPI(prompt, filePaths) {
       { role: "user", content: parts },
     ],
     temperature: 0.3,
-    max_tokens: 2000,
+    max_tokens: 4000,
+    response_format: { type: "json_object" }
   };
 
   const response = await axios.post(
@@ -176,15 +178,83 @@ async function evaluateAssignment(params) {
     }
 
     const result = JSON.parse(jsonStr);
+    
     // Validate required fields
     if (!result.scores || !Array.isArray(result.scores)) {
-      throw new Error("Invalid response structure");
+      throw new Error("Invalid response structure: 'scores' must be an array");
     }
+
+    // Auto-fix any malformed score entries (e.g. if AI hallucinates a string instead of object)
+    result.scores = result.scores.map(s => {
+      if (typeof s === "string") {
+        return {
+          parameter: "General Evaluation",
+          score: 0,
+          maxScore: 0,
+          feedback: s,
+          status: "poor"
+        };
+      }
+      return s;
+    });
+
     return result;
   } catch (parseErr) {
-    console.error("JSON parse error:", parseErr.message, "\nRaw:", rawResponse.substring(0, 500));
+    console.error("JSON parse error:", parseErr.message, "\nRaw:", rawResponse);
     throw new Error("Failed to parse AI evaluation response");
   }
 }
 
-module.exports = { evaluateAssignment };
+/**
+ * Generates questions based on a syllabus using OpenAI
+ */
+async function generateQuestionsFromSyllabus(syllabusText, settings) {
+  const { questionType, difficulty, count } = settings;
+  
+  let typeInstruction = "";
+  if (questionType === "mcq") {
+    typeInstruction = "Generate Multiple Choice Questions (with options A, B, C, D and the correct answer).";
+  } else if (questionType === "subjective") {
+    typeInstruction = "Generate Subjective / Essay type questions (include expected key points in the answer).";
+  } else {
+    typeInstruction = "Generate a mix of Multiple Choice Questions and Subjective Questions.";
+  }
+
+  const prompt = `You are an expert academic professor. Based on the following syllabus, your task is to generate a question paper.
+
+SYLLABUS CONTENT:
+${syllabusText}
+
+REQUIREMENTS:
+- Difficulty Level: ${difficulty || "medium"}
+- Quantity: Approximately ${count || "10"} questions in total.
+- Format: ${typeInstruction}
+
+Output the completely formatted Question Paper in plain text (or markdown). Do NOT output JSON. Include a section for the 'Model Answers / Key Points' at the end of the document.`;
+
+  try {
+    const requestPayload = {
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "You are an expert academic curriculum designer." },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.7,
+      max_tokens: 3000,
+    };
+
+    const response = await axios.post(
+      "https://api.openai.com/v1/chat/completions",
+      requestPayload,
+      { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" } }
+    );
+
+    return response.data.choices[0].message.content;
+  } catch (err) {
+    console.error("AI Question Generation error:", err.response ? JSON.stringify(err.response.data) : err.message);
+    throw new Error(`Failed to generate questions: ${err.message}`);
+  }
+}
+
+module.exports = { evaluateAssignment, generateQuestionsFromSyllabus };
+

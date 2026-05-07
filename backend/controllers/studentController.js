@@ -108,6 +108,8 @@ exports.evaluate = async (req, res) => {
       assignmentPath: req.file.path,
       assignmentText,
       result,
+      teacherApproved: false,
+      publishedToStudent: false,
     });
     await submission.save();
 
@@ -122,7 +124,9 @@ exports.evaluate = async (req, res) => {
 
 exports.getSubmissions = async (req, res) => {
   try {
-    const submissions = await Submission.find({ sessionId: req.params.sessionId }).sort({ evaluatedAt: -1 });
+    const submissions = await Submission.find({ sessionId: req.params.sessionId })
+      .sort({ evaluatedAt: -1 })
+      .select("sessionId studentId studentName assignmentPath evaluatedAt teacherApproved publishedToStudent approvedAt teacherFeedback result");
     res.json({ success: true, submissions });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -131,8 +135,54 @@ exports.getSubmissions = async (req, res) => {
 
 exports.getMySubmissions = async (req, res) => {
   try {
-    const submissions = await Submission.find({ studentId: req.user.id }).sort({ evaluatedAt: -1 });
-    res.json({ success: true, submissions });
+    const submissions = await Submission.find({ studentId: req.user.id })
+      .sort({ evaluatedAt: -1 })
+      .select("sessionId studentName evaluatedAt teacherApproved publishedToStudent approvedAt teacherFeedback result teacherModifiedResult");
+    
+    // For each submission, only include result data if published
+    const filteredSubmissions = submissions.map(sub => {
+      const subObj = sub.toObject();
+      if (sub.publishedToStudent) {
+        // Use teacher modified result only if it has actual scores, otherwise use original
+        const hasModifiedScores = sub.teacherModifiedResult?.scores?.length > 0;
+        subObj.result = hasModifiedScores ? sub.teacherModifiedResult : sub.result;
+      } else {
+        // Don't expose AI results before teacher approval
+        subObj.result = null;
+      }
+      return subObj;
+    });
+    
+    res.json({ success: true, submissions: filteredSubmissions });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.getSubmissionById = async (req, res) => {
+  try {
+    const submission = await Submission.findById(req.params.submissionId);
+    
+    if (!submission) {
+      return res.status(404).json({ success: false, message: "Submission not found." });
+    }
+    
+    // Verify the submission belongs to the requesting student
+    if (submission.studentId.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: "Unauthorized access." });
+    }
+    
+    // Only return result if published to student
+    const subObj = submission.toObject();
+    if (submission.publishedToStudent) {
+      // Use teacher modified result only if it has actual scores
+      const hasModifiedScores = submission.teacherModifiedResult?.scores?.length > 0;
+      subObj.result = hasModifiedScores ? submission.teacherModifiedResult : submission.result;
+    } else {
+      subObj.result = null;
+    }
+    
+    res.json({ success: true, submission: subObj });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

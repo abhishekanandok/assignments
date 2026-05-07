@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require("uuid");
-const { Session } = require("../models");
+const { Session, Submission } = require("../models");
 const { extractText } = require("../services/extractText");
+const { generateQuestionsFromSyllabus } = require("../services/aiService");
 
 exports.createSession = async (req, res) => {
   try {
@@ -24,6 +25,8 @@ exports.createSession = async (req, res) => {
     if (req.files?.questionPaper?.[0]) {
       questionPaperPath = req.files.questionPaper[0].path;
       questionPaperText = await extractText(questionPaperPath);
+    } else if (req.body.questionPaperText) {
+      questionPaperText = req.body.questionPaperText;
     }
 
     if (req.files?.modelAnswer?.[0]) {
@@ -76,6 +79,129 @@ exports.getSession = async (req, res) => {
     const session = await Session.findOne({ sessionId: req.params.sessionId });
     if (!session) return res.status(404).json({ success: false, message: "Session not found." });
     res.json({ success: true, session });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.generateQuestions = async (req, res) => {
+  try {
+    const settings = req.body.settings ? JSON.parse(req.body.settings) : {};
+
+    if (!req.files?.syllabusFile?.[0]) {
+      return res.status(400).json({ success: false, message: "Syllabus file is required." });
+    }
+
+    const syllabusPath = req.files.syllabusFile[0].path;
+    const syllabusText = await extractText(syllabusPath);
+
+    if (!syllabusText || syllabusText.trim().length < 20) {
+      return res.status(400).json({ success: false, message: "Could not extract sufficient text from the syllabus file." });
+    }
+
+    const generatedQuestions = await generateQuestionsFromSyllabus(syllabusText, settings);
+
+    res.json({
+      success: true,
+      generatedQuestions
+    });
+
+  } catch (err) {
+    console.error("Generate questions error:", err);
+    res.status(500).json({ success: false, message: err.message || "Failed to generate questions" });
+  }
+};
+
+/**
+ * Get a single submission with full details for teacher review
+ */
+exports.getSubmissionDetails = async (req, res) => {
+  try {
+    const submission = await Submission.findById(req.params.submissionId);
+    if (!submission) {
+      return res.status(404).json({ success: false, message: "Submission not found." });
+    }
+
+    // Verify the teacher owns the session
+    const session = await Session.findOne({ sessionId: submission.sessionId });
+    if (!session || session.createdBy.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: "Unauthorized access." });
+    }
+
+    res.json({ success: true, submission });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * Approve or reject a submission with optional teacher modifications
+ */
+exports.reviewSubmission = async (req, res) => {
+  try {
+    const { submissionId } = req.params;
+    const { action, modifiedResult, teacherFeedback } = req.body;
+
+    const submission = await Submission.findById(submissionId);
+    if (!submission) {
+      return res.status(404).json({ success: false, message: "Submission not found." });
+    }
+
+    // Verify the teacher owns the session
+    const session = await Session.findOne({ sessionId: submission.sessionId });
+    if (!session || session.createdBy.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: "Unauthorized access." });
+    }
+
+    if (action === "approve") {
+      submission.teacherApproved = true;
+      submission.publishedToStudent = true;
+      submission.approvedAt = new Date();
+      submission.teacherFeedback = teacherFeedback || "";
+      
+      // If teacher provided modifications, save them
+      if (modifiedResult && Object.keys(modifiedResult).length > 0) {
+        submission.teacherModifiedResult = modifiedResult;
+      }
+      
+      await submission.save();
+      res.json({ success: true, message: "Submission approved and published to student." });
+    } else if (action === "reject") {
+      submission.teacherApproved = false;
+      submission.publishedToStudent = false;
+      submission.teacherFeedback = teacherFeedback || "";
+      await submission.save();
+      res.json({ success: true, message: "Submission rejected. Student will not see results." });
+    } else {
+      res.status(400).json({ success: false, message: "Invalid action. Use 'approve' or 'reject'." });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * Publish approved results to students
+ */
+exports.publishResults = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    const session = await Session.findOne({ sessionId });
+    if (!session || session.createdBy.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: "Unauthorized access." });
+    }
+
+    // Publish all approved submissions for this session
+    const result = await Submission.updateMany(
+      { sessionId, teacherApproved: true },
+      { publishedToStudent: true }
+    );
+
+    res.json({ 
+      success: true, 
+      message: `Published ${result.modifiedCount} approved results to students.` 
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
