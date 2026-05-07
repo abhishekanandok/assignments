@@ -1,0 +1,142 @@
+"use client";
+
+import { useState } from "react";
+import { useAuth } from "@/context/AuthContext";
+import { motion } from "framer-motion";
+import { Mail, Lock, ArrowRight, BookOpen } from "lucide-react";
+import Link from "next/link";
+import { authAPI } from "@/lib/api";
+import { useToast } from "@/hooks/use-toast";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+
+export default function Login() {
+    const [email, setEmail] = useState("");
+    const [password, setPassword] = useState("");
+    const [loading, setLoading] = useState(false);
+    const { toast } = useToast();
+    const { login } = useAuth();
+
+    const handleLogin = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+
+        try {
+            const res = await authAPI.login({ email, password });
+            if (res.data.success) {
+                toast({
+                    title: "Login Successful",
+                    description: "Welcome back to AIEval!",
+                    variant: "default",
+                });
+                login(res.data.user, res.data.token);
+            }
+        } catch (err) {
+            toast({
+                title: "Authentication Failed",
+                description: err.response?.data?.message || "An error occurred during login. Please try again.",
+                variant: "destructive",
+            });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 relative overflow-hidden">
+            {/* Subtle Grid Background */}
+            <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px] pointer-events-none"></div>
+
+            <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+                className="w-full max-w-[380px] bg-white border border-slate-200/60 rounded-3xl shadow-xl overflow-hidden relative z-10 mx-4"
+            >
+                <div className="p-6 sm:p-8">
+                    <div className="flex justify-center mb-6">
+                        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary to-accent flex items-center justify-center shadow-lg shadow-primary/30">
+                            <BookOpen className="text-white w-6 h-6" />
+                        </div>
+                    </div>
+
+                    <div className="text-center mb-8">
+                        <h1 className="text-2xl font-extrabold tracking-tight text-slate-900 mb-1.5">
+                            Welcome Back
+                        </h1>
+                        <p className="text-slate-500 font-medium text-sm">Sign in to access your dashboard</p>
+                    </div>
+
+                    <form onSubmit={handleLogin} className="space-y-5">
+                        <div className="space-y-3">
+                            <div className="space-y-1.5">
+                                <Label htmlFor="email" className="text-slate-700 ml-1 text-xs">Email Address</Label>
+                                <div className="relative group">
+                                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                        <Mail className="h-4 w-4 text-slate-400 group-focus-within:text-primary transition-colors" />
+                                    </div>
+                                    <Input
+                                        id="email"
+                                        type="email"
+                                        value={email}
+                                        onChange={(e) => setEmail(e.target.value)}
+                                        className="pl-9 h-10 bg-slate-50 border-slate-200 focus-visible:ring-primary/20 rounded-lg text-sm"
+                                        placeholder="name@university.edu"
+                                        required
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <div className="flex justify-between items-center ml-1">
+                                    <Label htmlFor="password" className="text-slate-700 text-xs">Password</Label>
+                                    <Link href="/forgot-password" className="text-[11px] font-bold text-primary hover:text-primary/80 transition-colors">Forgot?</Link>
+                                </div>
+                                <div className="relative group">
+                                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                        <Lock className="h-4 w-4 text-slate-400 group-focus-within:text-primary transition-colors" />
+                                    </div>
+                                    <Input
+                                        id="password"
+                                        type="password"
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        className="pl-9 h-10 bg-slate-50 border-slate-200 focus-visible:ring-primary/20 rounded-lg text-sm"
+                                        placeholder="••••••••"
+                                        required
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        <Button
+                            type="submit"
+                            disabled={loading}
+                            className="w-full h-10 rounded-lg text-sm font-bold bg-gradient-to-r from-primary to-accent hover:from-primary/90 hover:to-accent/90 shadow-[0_4px_14px_rgba(249,115,22,0.25)] transition-all flex items-center justify-center gap-2 group mt-2 text-white"
+                        >
+                            {loading ? (
+                                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                            ) : (
+                                <>
+                                    <span>Sign In</span>
+                                    <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+                                </>
+                            )}
+                        </Button>
+                    </form>
+
+                    <p className="mt-6 text-center text-sm font-medium text-slate-500">
+                        Don't have an account?{" "}
+                        <Link href="/signup" className="text-primary font-bold hover:text-accent transition-colors">
+                            Create one
+                        </Link>
+                    </p>
+                </div>
+                
+                {/* Decorative Bottom Bar */}
+                <div className="w-full h-1 bg-gradient-to-r from-primary via-accent to-primary"></div>
+            </motion.div>
+        </div>
+    );
+}
