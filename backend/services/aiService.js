@@ -1,4 +1,3 @@
-const Anthropic = require("@anthropic-ai/sdk");
 const axios = require("axios");
 const fs = require("fs");
 
@@ -35,7 +34,8 @@ ${questionText ? `QUESTION PAPER:\n${questionText}\n` : ""}
 ${modelAnswerText ? `MODEL ANSWER (use as reference, not as exact match requirement):\n${modelAnswerText}\n` : ""}
 
 STUDENT ASSIGNMENT TO EVALUATE:
-${filePath ? "Part 1 of the prompt contains the student assignment file (PDF/Image)." : ""}
+${assignmentText ? `Text Extracted from Assignment:\n${assignmentText}\n` : ""}
+${filePath ? "Part of the prompt contains the student assignment file (PDF/Image). If text extraction was provided above, use it as the primary text, but you can also look at the images if needed." : ""}
 
 EVALUATION RUBRIC (Total: ${totalMaxMarks} marks):
 ${rubricStr}
@@ -44,15 +44,15 @@ INSTRUCTIONS:
 1. CRITICAL: You must strictly correlate the student's assignment against the QUESTION PAPER and the MODEL ANSWER provided.
 2. Do not grade the student's assignment in isolation. Check if their answers actually solve the exact questions asked in the Question Paper.
 3. Compare their facts, formulas, and conceptual explanations directly against the Model Answer. Penalize hallucinated, irrelevant, or factually incorrect information that deviates from the Model Answer.
-4. Carefully analyze the student's assignment (read the attached document if provided). It may contain handwritten text; do your best to transcribe it accurately.
+4. Carefully analyze the student's assignment (read the attached document images if provided). It may contain handwritten text; do your best to transcribe it accurately.
 5. Evaluate the student's assignment against each rubric parameter. Be highly accurate, objective, and reference where they succeeded or failed to match the Model Answer.
 6. Award marks strictly within the max marks for each parameter based on this factual correlation.
 7. Provide specific, constructive, and detailed feedback for each parameter specifically referencing how it compares to the model answer.
-5. Detect similarity risk (low/medium/high) — check if the text looks AI-generated or copied.
-6. List 3-5 specific strengths.
-7. List 3-5 actionable improvement suggestions.
-7. Write a brief overall comment (2-3 sentences)
-8. Calculate grade: A+ (95-100%), A (85-94%), B+ (75-84%), B (65-74%), C (50-64%), D (35-49%), F (<35%)
+8. Detect similarity risk (low/medium/high) — check if the text looks AI-generated or copied.
+9. List 3-5 specific strengths.
+10. List 3-5 actionable improvement suggestions.
+11. Write a brief overall comment (2-3 sentences)
+12. Calculate grade: A+ (95-100%), A (85-94%), B+ (75-84%), B (65-74%), C (50-64%), D (35-49%), F (<35%)
 
 YOU MUST RESPOND IN VALID JSON FORMAT ONLY. No markdown, no explanation outside JSON.
 
@@ -78,59 +78,28 @@ YOU MUST RESPOND IN VALID JSON FORMAT ONLY. No markdown, no explanation outside 
 }
 
 /**
- * Call Anthropic Claude API
+ * Call OpenAI API supporting image base64 and PDF conversion
  */
-async function callAnthropicAPI(prompt) {
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const message = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 2000,
-    messages: [{ role: "user", content: prompt }],
-  });
-  return message.content[0].text;
-}
-
-/**
- * Call OpenAI API
- */
-async function callOpenAIAPI(prompt) {
-  const response = await axios.post(
-    "https://api.openai.com/v1/chat/completions",
-    {
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "You are an expert academic evaluator. Always respond in valid JSON format only." },
-        { role: "user", content: prompt },
-      ],
-      temperature: 0.3,
-      max_tokens: 2000,
-    },
-    { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" } }
-  );
-  return response.data.choices[0].message.content;
-}
-
-/**
- * Call Google Gemini API
- */
-async function callGeminiAPI(prompt, filePaths) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${process.env.GEMINI_API_KEY}`;
-
+async function callOpenAIAPI(prompt, filePaths) {
   const parts = [];
+
+  // 1. Add prompt text
+  parts.push({ type: "text", text: prompt });
 
   const addFilePart = async (fPath, mType) => {
     if (!fPath) return;
-    const supportedMimes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
-    let finalMimeType = mType || 'application/pdf'; // fallback default
 
-    if (fPath.includes('.pdf')) finalMimeType = 'application/pdf';
-    else if (fPath.match(/\.(jpeg|jpg|png|webp)$/i)) {
-      if (fPath.includes('.png')) finalMimeType = 'image/png';
-      else if (fPath.includes('.webp')) finalMimeType = 'image/webp';
-      else finalMimeType = 'image/jpeg';
-    }
+    if (fPath.includes('.pdf') || (mType && mType === 'application/pdf')) {
+      console.warn(`PDF-to-image conversion is temporarily disabled because canvas failed to build on Windows.`);
+      // We will rely on the text extraction instead for PDFs.
+    } else {
+      let finalMimeType = mType || 'image/jpeg'; // fallback default
+      if (fPath.match(/\.(jpeg|jpg|png|webp)$/i)) {
+        if (fPath.includes('.png')) finalMimeType = 'image/png';
+        else if (fPath.includes('.webp')) finalMimeType = 'image/webp';
+        else finalMimeType = 'image/jpeg';
+      }
 
-    if (supportedMimes.includes(finalMimeType)) {
       let base64Data;
       try {
         if (fPath.startsWith('http')) {
@@ -140,60 +109,59 @@ async function callGeminiAPI(prompt, filePaths) {
           base64Data = fs.readFileSync(fPath).toString('base64');
         }
       } catch (e) {
-        console.error("Error fetching file for Gemini:", fPath, e.message);
+        console.error("Error fetching image for OpenAI:", fPath, e.message);
       }
 
       if (base64Data) {
         parts.push({
-          inlineData: {
-            mimeType: finalMimeType,
-            data: base64Data
-          }
+          type: "image_url",
+          image_url: { url: `data:${finalMimeType};base64,${base64Data}` }
         });
       }
     }
   };
 
-  // 1. Add student assignment
+  // Add files
   await addFilePart(filePaths.assignmentPath, filePaths.assignmentMimeType);
-  // 2. Add question paper
   if (filePaths.questionPath) await addFilePart(filePaths.questionPath, null);
-  // 3. Add model answer
   if (filePaths.modelAnswerPath) await addFilePart(filePaths.modelAnswerPath, null);
 
-  parts.push({ text: prompt });
+  const requestPayload = {
+    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    messages: [
+      { role: "system", content: "You are an expert academic evaluator. Always respond in valid JSON format only." },
+      { role: "user", content: parts },
+    ],
+    temperature: 0.3,
+    max_tokens: 2000,
+  };
 
-  const response = await axios.post(url, {
-    contents: [{ role: "user", parts: parts }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 8192, responseMimeType: "application/json" },
-  });
-  return response.data.candidates[0].content.parts[0].text;
+  const response = await axios.post(
+    "https://api.openai.com/v1/chat/completions",
+    requestPayload,
+    { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" } }
+  );
+
+  return response.data.choices[0].message.content;
 }
 
 /**
- * Main evaluation function - tries configured provider, falls back gracefully
+ * Main evaluation function - exclusively uses OpenAI
  */
 async function evaluateAssignment(params) {
   const prompt = buildEvaluationPrompt(params);
   let rawResponse;
 
-  const provider = process.env.AI_PROVIDER || "anthropic";
-
   try {
-    if (provider === "openai" && process.env.OPENAI_API_KEY) {
-      rawResponse = await callOpenAIAPI(prompt);
-    } else if (provider === "gemini" && process.env.GEMINI_API_KEY) {
-      rawResponse = await callGeminiAPI(prompt, {
-        assignmentPath: params.filePath,
-        assignmentMimeType: params.mimeType,
-        questionPath: params.questionPath,
-        modelAnswerPath: params.modelAnswerPath
-      });
-    } else if (process.env.ANTHROPIC_API_KEY) {
-      rawResponse = await callAnthropicAPI(prompt);
-    } else {
-      throw new Error("No AI API key configured");
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error("OPENAI_API_KEY is not configured");
     }
+    rawResponse = await callOpenAIAPI(prompt, {
+      assignmentPath: params.filePath,
+      assignmentMimeType: params.mimeType,
+      questionPath: params.questionPath,
+      modelAnswerPath: params.modelAnswerPath
+    });
   } catch (err) {
     console.error("AI API error:", err.response ? JSON.stringify(err.response.data) : err.message);
     throw new Error(`AI evaluation failed: ${err.message}`);

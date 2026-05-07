@@ -3,8 +3,9 @@
 import { ChevronDown, Moon, Sun, BookOpen } from "lucide-react";
 import Link from "next/link";
 import { useTheme } from "@/context/ThemeContext";
-import { useState } from "react";
+import { useState, useContext } from "react";
 import { Button } from "@/components/ui/button";
+import { AuthContext } from "@/context/AuthContext";
 
 const platformDropdownItems = [
   { label: "AI Evaluation", href: "/features/ai-evaluation" },
@@ -44,6 +45,7 @@ export default function Header({
 }) {
   const { theme, toggleTheme } = useTheme();
   const [activeDropdown, setActiveDropdown] = useState(null);
+  const { user, logout } = useContext(AuthContext) || {};
 
   return (
     <header className="fixed top-5 left-0 right-0 z-50 flex justify-center px-4">
@@ -149,16 +151,34 @@ export default function Header({
               )}
             </Button>
 
-            <Link href="/login">
-              <Button
-                variant="primary"
-                size="default"
-                className="rounded-full px-6 font-semibold"
-                onClick={onCtaClick}
-              >
-                {ctaText}
-              </Button>
-            </Link>
+            {user ? (
+              <div className="flex items-center gap-2">
+                <Link href={user.role === 'teacher' ? '/faculty' : '/student'}>
+                  <Button variant="outline" size="default" className="rounded-full px-4 font-semibold border-gray-200 dark:border-white/10 dark:text-gray-200">
+                    Dashboard
+                  </Button>
+                </Link>
+                <Button
+                  variant="primary"
+                  size="default"
+                  className="rounded-full px-6 font-semibold"
+                  onClick={logout}
+                >
+                  Logout
+                </Button>
+              </div>
+            ) : (
+              <Link href="/login">
+                <Button
+                  variant="primary"
+                  size="default"
+                  className="rounded-full px-6 font-semibold"
+                  onClick={onCtaClick}
+                >
+                  {ctaText}
+                </Button>
+              </Link>
+            )}
           </div>
         </div>
       </div>

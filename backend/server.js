@@ -12,6 +12,7 @@ const rateLimit = require("express-rate-limit");
 const facultyRoutes = require("./routes/faculty");
 const studentRoutes = require("./routes/student");
 const authRoutes = require("./routes/auth");
+const connectDB = require("./config/db");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -40,7 +41,7 @@ app.get("/health", (req, res) => {
   res.json({
     status: "ok",
     timestamp: new Date().toISOString(),
-    aiProvider: process.env.AI_PROVIDER || "anthropic",
+    aiProvider: "openai",
     database: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
   });
 });
@@ -66,15 +67,7 @@ app.use((err, req, res, next) => {
 
 // Connect to MongoDB and start server
 async function start() {
-  const mongoUri = process.env.MONGODB_URI || "mongodb://localhost:27017/ai-evaluator";
-
-  try {
-    await mongoose.connect(mongoUri);
-    console.log("✅ Connected to MongoDB");
-  } catch (err) {
-    console.warn("⚠️  MongoDB connection failed:", err.message);
-    console.warn("   Running without database (results won't be persisted)");
-  }
+  await connectDB();
 
   app.listen(PORT, () => {
     console.log(`
@@ -82,7 +75,7 @@ async function start() {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Server:      http://localhost:${PORT}
 Health:      http://localhost:${PORT}/health
-AI Provider: ${process.env.AI_PROVIDER || "anthropic"}
+AI Provider: openai
 Environment: ${process.env.NODE_ENV || "development"}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     `);
